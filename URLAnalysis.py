@@ -1,11 +1,41 @@
 import ipaddress
+import json
 import re
+import socket
+import ssl
+from datetime import date, datetime
+import dns
 import requests
-from datetime import date
+import sympy
 from dateutil.parser import parse as date_parse
+
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_5) AppleWebKit/537.36 (KHTML, like Gecko) '
+                  'Chrome/50.0.2661.102 Safari/537.36'}
+
+ids = ['NONE', 'A', 'NS', 'MD', 'MF', 'CNAME', 'SOA', 'MB', 'MG', 'MR', 'NULL', 'WKS', 'PTR', 'HINFO', 'MINFO', 'MX',
+       'TXT', 'RP', 'AFSDB', 'X25', 'ISDN', 'RT', 'NSAP', 'NSAP-PTR', 'SIG', 'KEY', 'PX', 'GPOS', 'AAAA', 'LOC', 'NXT',
+       'SRV', 'NAPTR', 'KX', 'CERT', 'A6', 'DNAME', 'OPT', 'APL', 'DS', 'SSHFP', 'IPSECKEY', 'RRSIG', 'NSEC', 'DNSKEY',
+       'DHCID', 'NSEC3', 'NSEC3PARAM', 'TLSA', 'HIP', 'CDS', 'CDNSKEY', 'CSYNC', 'SPF', 'UNSPEC', 'EUI48', 'EUI64',
+       'TKEY', 'TSIG', 'IXFR', 'AXFR', 'MAILB', 'MAILA', 'ANY', 'URI', 'CAA', 'TA', 'DLV']
 
 
 # having_IP_Address
+
+
+def diff_month(d1, d2):
+    return (d1.year - d2.year) * 12 + d1.month - d2.month
+
+
+def years_difference(date_str):
+    given_date = datetime.strptime(date_str, '%b %d %H:%M:%S %Y GMT')
+    now = datetime.utcnow()
+    years_diff = now.year - given_date.year
+    if (now.month, now.day) < (given_date.month, given_date.day):
+        years_diff -= 1
+    return years_diff
+
+
 def having_ip_address(url):
     try:
         ipaddress.ip_address(url)
@@ -64,8 +94,20 @@ def having_sub_domain(url):
 
 
 # SSLfinal_State
-def ssl_final_state(url):
-    pass
+def ssl_final_state(url, hostname):
+    try:
+        port = 443
+        context = ssl.create_default_context()
+        with socket.create_connection((hostname, port)) as sock:
+            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                cert = ssock.getpeercert()
+                if cert:
+                    if years_difference(cert['notBefore']) >= 1:
+                        return 1
+                    return 0
+                return -1
+    except IndexError:
+        return -1
 
 
 # Domain_registeration_length
@@ -115,12 +157,12 @@ def links_in_tags(url):
 
 # SFH
 def sfh(url):
-    pass
+    return -1
 
 
 # Submitting_to_email
 def submitting_to_email(url, response):
-    if re.findall(r"[mail\(\)|mailto:?]", response.text):
+    if re.findall(r"[mail()|mailto:?]", response.text):
         return 1
     else:
         return -1
@@ -175,28 +217,70 @@ def iframe(url, response):
 
 
 # age_of_domain
-def age_of_domain(url):
-    pass
+def age_of_domain(url, whois_response):
+    try:
+        registration_date = \
+            re.findall(r'Registration Date:</div><div class="df-value">([^<]+)</div>', whois_response.text)[0]
+        if diff_month(date.today(), date_parse(registration_date)) >= 6:
+            return -1
+        else:
+            return 1
+    except IndexError:
+        return 1
 
 
 # DNSRecord
-def dns_recode(url):
+def dns_recode(url, domain):
+    for a in ids:
+        try:
+            answers = dns.resolver.query(domain, a)
+            if answers:
+                return 1
+        except Exception as e:
+            pass
     return -1
 
 
 # web_traffic
 def web_traffic(url):
-    pass
+    # alexa không còn hoạt động
+    url = (f"https://pro.similarweb.com/widgetApi/WebsiteOverview/WebRanks/SingleMetric?country=999&from=2024%7C08"
+           f"%7C01&to=2024%7C08%7C31&includeSubDomains=true&isWindow=false&keys={
+           url}&timeGranularity=Monthly&webSource=Total")
+    try:
+        data = json.loads(requests.get(url).text)
+        first_key = next(iter(data))
+        if data["Data"][first_key]["GlobalRank"]["Value"] < 100000:
+            return 1
+        else:
+            return 0
+    except Exception as e:
+        return -1
 
 
 # Page_Rank
-def page_rank(url):
-    pass
+def page_rank(url, rank_checker_response):
+    try:
+        data = re.findall(r"<span[^>]*>(.*?)</span>",
+                          re.findall(r"<h2><b>(.*?)</b></h2><br/?>", rank_checker_response.text)[0])[0]
+        if data[0] == "/":
+            data = "0" + data
+        rank = sympy.simplify(data)
+        if rank < 0.2:
+            return -1
+        else:
+            return 1
+    except IndexError:
+        return -1
 
 
 # Google_Index
-def google_index(url):
-    pass
+def google_index(url, rank_checker_response):
+    data = re.findall(r"Indexed URLs:\s*([\d,]+)<br\/?>", rank_checker_response.text)[0]
+    if data != "":
+        return 1
+    else:
+        return -1
 
 
 # Links_pointing_to_page
@@ -213,3 +297,44 @@ def links_pointing_to_page(url, response):
 # Statistical_report
 def statistical_report(url):
     pass
+
+
+def url_analysis(url):
+    res = requests.get(url)
+    domain = re.findall(r"://([^/]+)/?", url)[0]
+    whois_response = requests.get("https://www.whois.com/whois/" + domain)
+    rank_checker_response = requests.post("https://www.checkpagerank.net/index.php", {
+        "name": domain
+    }, headers=headers)
+
+    return [
+        having_ip_address(url),
+        url_length(url),
+        shortining_service(url),
+        having_at_symbol(url),
+        double_slash_redirecting(url),
+        prefix_suffix(url),
+        having_sub_domain(url),
+        ssl_final_state(url, domain),
+        domain_registeration_length(url),
+        favicon(url),
+        port(url, domain),
+        https_token(url, domain),
+        request_url(url),
+        url_of_anchor(url),
+        links_in_tags(url),
+        sfh(url),
+        submitting_to_email(url, res),
+        abnormal_url(url, res),
+        redirect(url, res),
+        on_mouseover(url, res),
+        right_click(url, res),
+        popup_window(url, res),
+        age_of_domain(url, whois_response),
+        dns_recode(url, domain),
+        web_traffic(url),
+        page_rank(url, rank_checker_response),
+        google_index(url, rank_checker_response),
+        links_pointing_to_page(url, res),
+        statistical_report(url)
+    ]
